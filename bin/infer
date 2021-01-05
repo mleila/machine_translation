@@ -1,0 +1,81 @@
+import warnings
+warnings.filterwarnings('ignore')
+
+import argparse
+from pathlib import Path
+
+import torch
+
+from translator.data import EuroParl, make_fields, make_dataset
+from translator.networks import Encode_Decoder_Model, Encoder, Decoder
+from translator.utils import load_checkpoint, tokenize_sent, translate_sentence
+
+
+def get_cli_args():
+    '''
+    train -d data/fr-en -m models -s en -t fr -ss 5000
+    '''
+    parser = argparse.ArgumentParser(description='Data Ingestion Tool')
+    parser.add_argument('-d', '--data-dir', type=str, dest='DATA_DIR', required=True)
+    parser.add_argument('-m', '--model-dir', type=str, dest='MODEL_DIR', required=True)
+    parser.add_argument('-s', '--source-lang', type=str,  dest='SRC_LANG', required=True)
+    parser.add_argument('-t', '--target-lang', type=str, dest='TRGT_LANG', required=True)
+    parser.add_argument('-sent', '--sentence', type=str, dest='SENTENCE', required=True)
+
+    return parser.parse_args()
+
+
+def main():
+    # get cli args
+    args = get_cli_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    first_field, second_field = make_fields(args.SRC_LANG, args.TRGT_LANG)
+    first_data_field = (args.SRC_LANG, first_field)
+    second_data_field = (args.TRGT_LANG, second_field)
+
+    _, _, test = make_dataset(
+        first_data_field,
+        second_data_field,
+        Path(args.DATA_DIR) / Path("train.csv"),
+        Path(args.DATA_DIR) / Path("valid.csv"),
+        Path(args.DATA_DIR) / Path("test.csv")
+        )
+
+    # model parameters
+    sequenec_size_encoder = len(first_field.vocab)
+    sequenec_size_decoder = len(second_field.vocab)
+    output_size = len(second_field.vocab)
+    embedding_dim = 300
+    hidden_size = 100
+    num_layers = 2
+
+    encoder = Encoder(sequenec_size_encoder, embedding_dim, hidden_size, num_layers).to(device)
+    decoder = Decoder(sequenec_size_decoder, embedding_dim, output_size, hidden_size, num_layers).to(device)
+    model = Encode_Decoder_Model(encoder, decoder, device).to(device)
+
+    model_path = Path(args.MODEL_DIR) / Path("checkpoint_epoch=1.pth.tar")
+    load_checkpoint(torch.load(model_path, map_location=torch.device('cpu')), model)
+
+    sentence_tensor = tokenize_sent(
+        args.SENTENCE,
+        src_language=args.SRC_LANG,
+        language_field=first_field,
+        device=device
+        )
+
+    translation = translate_sentence(
+        model,
+        sentence_tensor,
+        dest_language=args.TRGT_LANG,
+        language_field=second_field,
+        device=device,
+        max_length=50
+        )
+
+    print(f'{translation}')
+
+
+if __name__=="__main__":
+    main()

@@ -1,0 +1,132 @@
+#!/usr/bin/env python
+import argparse
+import json
+
+import torch
+import torchtext
+
+
+from translator.data import EuroParl, make_dataset, make_fields
+from translator.networks import Encode_Decoder_Model, Encoder, Decoder
+from translator.utils import save_checkpoint
+
+
+def read_json_file(path: str):
+    """Read a json file into a dict."""
+    with open(path, 'r') as f:
+        data = json.load(f)
+    return data
+
+
+def get_cli_args():
+    '''
+    train -d data/fr-en -m models -s en -t fr -ss 5000
+    '''
+    parser = argparse.ArgumentParser(description='Data Ingestion Tool')
+    parser.add_argument('-d', '--data-dir', type=str, dest='DATA_DIR', required=True)
+    parser.add_argument('-m', '--model-dir', type=str, dest='MODEL_DIR', required=True)
+    parser.add_argument('-s', '--source-lang', type=str,  dest='SRC_LANG', required=True)
+    parser.add_argument('-t', '--target-lang', type=str, dest='TRGT_LANG', required=True)
+    parser.add_argument('-ss', '--sample-size', type=int, dest='SAMPLE_SIZE')
+    parser.add_argument('-b', '--batch-size', type=int, dest='BATCH_SIZE', default=32)
+    parser.add_argument('-e', '--epochs', type=int, dest='EPOCHS', default=10)
+
+    # model specs
+    parser.add_argument('--model-specs', type=str, dest='MODEL_SPECS', required=True)
+
+    return parser.parse_args()
+
+
+def main():
+    # get cli args
+    args = get_cli_args()
+
+    euro_parl = EuroParl(
+        data_dir=args.DATA_DIR,
+        lang1_name=args.SRC_LANG,
+        lang2_name=args.TRGT_LANG,
+        sample_size=args.SAMPLE_SIZE
+    )
+
+    euro_parl.train_valid_test_split(valid_size=0.3, test_size=0.2)
+    euro_parl.to_csv(args.DATA_DIR)
+
+    first_field, second_field = make_fields(args.SRC_LANG, args.TRGT_LANG)
+    first_data_field = (args.SRC_LANG, first_field)
+    second_data_field = (args.TRGT_LANG, second_field)
+
+    train, val, test = make_dataset(
+        first_data_field,
+        second_data_field,
+        euro_parl.train_path,
+        euro_parl.valid_path,
+        euro_parl.test_path
+        )
+
+    train_iterator = torchtext.data.BucketIterator(train, batch_size=args.BATCH_SIZE, shuffle=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # model parameters
+    sequenec_size_encoder = len(first_field.vocab)
+    sequenec_size_decoder = len(second_field.vocab)
+    output_size = len(second_field.vocab)
+
+    model_specs = read_json_file(args.MODEL_SPECS)
+    embedding_dim = int(model_specs['embedding_dim'])
+    hidden_size = int(model_specs['hidden_size'])
+    num_layers = int(model_specs['num_layers'])
+
+    encoder = Encoder(sequenec_size_encoder, embedding_dim, hidden_size, num_layers).to(device)
+    decoder = Decoder(sequenec_size_decoder, embedding_dim, output_size, hidden_size, num_layers).to(device)
+    model = Encode_Decoder_Model(encoder, decoder, device).to(device)
+
+    # training params
+    learning_rate = 0.001
+
+    # training
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    pad_idx = first_field.vocab.stoi["<pad>"]
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_idx)
+
+    for epoch in range(args.EPOCHS):
+        print(f"[Epoch {epoch} / {args.EPOCHS}]")
+
+        checkpoint = {"state_dict": model.state_dict(), "optimizer": optimizer.state_dict()}
+        save_checkpoint(checkpoint, filename=f"{args.MODEL_DIR}/checkpoint_epoch={epoch}.pth.tar")
+
+        model.train()
+
+        for batch_idx, batch in enumerate(train_iterator):
+            # Get input and targets and get to cuda
+            inp_data = batch.en.to(device)
+            target = batch.fr.to(device)
+
+            # Forward prop
+            output = model(inp_data, target, len(second_field.vocab))
+
+            # Output is of shape (trg_len, batch_size, output_dim) but Cross Entropy Loss
+            # doesn't take input in that form. For example if we have MNIST we want to have
+            # output to be: (N, 10) and targets just (N). Here we can view it in a similar
+            # way that we have output_words * batch_size that we want to send in into
+            # our cost function, so we need to do some reshapin. While we're at it
+            # Let's also remove the start token while we're at it
+            output = output[1:].reshape(-1, output.shape[2])
+            target = target[1:].reshape(-1)
+
+            optimizer.zero_grad()
+            loss = criterion(output, target)
+
+            # Back prop
+            loss.backward()
+
+            # Clip to avoid exploding gradient issues, makes sure grads are
+            # within a healthy range
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+
+            # Gradient descent step
+            optimizer.step()
+
+
+if __name__=="__main__":
+    main()

@@ -1,0 +1,39 @@
+
+import argparse
+from pathlib import Path
+
+from translator.languages import Language
+
+
+def get_cli_args():
+    '''
+    build_vocab -d data/fr-en/europarl-v7.fr-en.en -o data/languages -n en
+    '''
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument('-d', '--data-file', type=str, dest='DATA_FILE', required=True)
+    parser.add_argument('-o', '--output-dir', type=str, dest='OUTPUT_DIR', required=True)
+    parser.add_argument('-n', '--name', type=str,  dest='NAME', required=True)
+    return parser.parse_args()
+
+
+def main():
+    # get cli args
+    args = get_cli_args()
+
+    # read data
+    with open(args.DATA_FILE, 'r',  encoding='utf-8') as file:
+        data = file.read().split('\n')
+
+    # instantiate class
+    language = Language(args.NAME)
+
+    # build vocab from data
+    language.build_vocab(data=data)
+
+    # write language object as pickle file
+    output_path = Path(args.OUTPUT_DIR) / Path(f'{args.NAME.lower()}.p')
+    language.save_language(output_path)
+
+
+if __name__ == "__main__":
+    main()
