@@ -1,0 +1,30 @@
+'''Create data generators from the EuroParl dataset.'''
+from translator.data import EuroParl, make_dataset, make_fields
+
+
+def main():
+    EURO_PARL_DATA_PATH = 'data/fr-en'
+    ENGLISH, FRENCH = 'en', 'fr'
+
+    euro_parl = EuroParl(data_dir=EURO_PARL_DATA_PATH, lang1_name=ENGLISH, lang2_name=FRENCH, sample_size=3000)
+    euro_parl.train_valid_test_split(valid_size=0.3, test_size=0.2)
+    euro_parl.to_csv('data/fr-en')
+
+    english_field, french_field = make_fields(ENGLISH, FRENCH)
+    english_data_field = (ENGLISH, english_field)
+    french_data_field = (FRENCH, french_field)
+
+    # associate the text in the 'English' column with the EN_TEXT field, # and 'French' with FR_TEXT
+    train, val, test = make_dataset(
+        english_data_field,
+        french_data_field,
+        euro_parl.train_path,
+        euro_parl.valid_path,
+        euro_parl.test_path)
+    print(train)
+    print(val)
+    print(test)
+
+
+if __name__=="__main__":
+    main()
